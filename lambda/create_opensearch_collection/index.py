@@ -71,6 +71,10 @@ def create_or_get_network_policy(collection_name):
     subnet_ids = os.environ['SUBNET_IDS'].split(',')
     security_group_id = os.environ['SECURITY_GROUP_ID']
 
+    print(f"Attempting to create or get network policy for VPC: {vpc_id}")
+    print(f"Subnet IDs: {subnet_ids}")
+    print(f"Security Group ID: {security_group_id}")
+
     try:
         # Try to create a new VPC endpoint
         response = opensearch_serverless.create_vpc_endpoint(
@@ -84,7 +88,15 @@ def create_or_get_network_policy(collection_name):
         return vpc_endpoint_id
     except ClientError as e:
         if e.response['Error']['Code'] == 'ConflictException':
-            # If the VPC endpoint already exists, retrieve it
+            print("VPC endpoint creation failed due to conflict. Attempting to find existing endpoint.")
+            return find_existing_vpc_endpoint(vpc_id)
+        else:
+            print(f"Error creating network policy: {e.response['Error']['Message']}")
+            raise
+
+def find_existing_vpc_endpoint(vpc_id, max_retries=3, delay=5):
+    for attempt in range(max_retries):
+        try:
             existing_endpoints = ec2.describe_vpc_endpoints(
                 Filters=[
                     {'Name': 'vpc-id', 'Values': [vpc_id]},
@@ -94,13 +106,18 @@ def create_or_get_network_policy(collection_name):
 
             if existing_endpoints:
                 vpc_endpoint_id = existing_endpoints[0]['VpcEndpointId']
-                print(f"Using existing VPC endpoint: {vpc_endpoint_id}")
+                print(f"Found existing VPC endpoint: {vpc_endpoint_id}")
                 return vpc_endpoint_id
             else:
-                raise Exception("VPC endpoint conflict, but no existing endpoint found.")
-        else:
-            print(f"Error creating or getting network policy: {e.response['Error']['Message']}")
-            raise
+                print(f"No existing VPC endpoint found for VPC {vpc_id} on attempt {attempt + 1}")
+        except ClientError as e:
+            print(f"Error describing VPC endpoints: {e.response['Error']['Message']}")
+
+        if attempt < max_retries - 1:
+            print(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
+
+    raise Exception(f"Unable to find existing VPC endpoint for VPC {vpc_id} after {max_retries} attempts")
 
 def create_data_access_policy(collection_name):
     policy_name = f"{collection_name}-data-access-policy"
@@ -118,6 +135,7 @@ def create_data_access_policy(collection_name):
     except ClientError as e:
         print(f"Error creating data access policy: {e.response['Error']['Message']}")
         raise
+
 
 def create_collection(collection_name):
     try:
